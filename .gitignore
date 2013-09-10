@@ -1,0 +1,13 @@
+*~
+*.DS_Store
+*.iml
+.idea
+target
+lib_managed
+src_managed
+project/boot/
+dist
+*.log
+project/plugins/project
+sbt-launch.jar
+.ensime*
