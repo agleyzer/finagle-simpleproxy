@@ -7,20 +7,24 @@ import com.twitter.util.{Await, Future}
 import com.twitter.util.{Stopwatch, SynchronizedLruMap}
 import java.net.{InetSocketAddress, SocketAddress}
 import org.jboss.netty.handler.codec.http._
+import com.twitter.finagle.stats.MetricsStatsReceiver
 
 
 object Main extends TwitterServer {
-  val origin = flag("origin", new InetSocketAddress("xkcd.com", 80), "Origin Server")
-  val listenOn = flag("http.main", new InetSocketAddress(8888), "Socket to listen on")
+
+  val originFlag = flag("origin", new InetSocketAddress("xkcd.com", 80), "Origin Server")
+
+  val listenOnFlag = flag("http.main", new InetSocketAddress(8888), "Socket to listen on")
 
   val logFilter = new SimpleFilter[HttpRequest, HttpResponse] {
     def apply(req: HttpRequest, service: Service[HttpRequest, HttpResponse]): Future[HttpResponse] = {
       val elapsed = Stopwatch.start()
       service(req) onSuccess { res =>
-        log.info("%s %s => %d in %d ms",
+        log.info("%s %s => %d, %d bytes in %d ms",
           req.getMethod,
           req.getUri,
           res.getStatus.getCode,
+          res.getContentLength,
           elapsed().inMillis)
       }
     }
@@ -35,13 +39,28 @@ object Main extends TwitterServer {
     }
   }
 
-  def originService = Http.newService(Group[SocketAddress](origin()))
+  val contentSizeFilter = new SimpleFilter[HttpRequest, HttpResponse] {
+    val stat = new MetricsStatsReceiver().stat("simpleproxy", "responseSize")
+
+    def apply(req: HttpRequest, service: Service[HttpRequest, HttpResponse]): Future[HttpResponse] = {
+      service(req) map { rsp =>
+        stat.add(rsp.getContentLength)
+        rsp
+      }
+    }
+  }
+
+  def originService = Http.newService(Group[SocketAddress](originFlag()))
 
   def main() {
 
-    val service = headerFilter andThen logFilter andThen originService
+    val service =
+      headerFilter      andThen
+      contentSizeFilter andThen
+      logFilter         andThen
+      originService
 
-    val server = Http.serve(listenOn(), service)
+    val server = Http.serve(listenOnFlag(), service)
 
     onExit {
       server.close()
