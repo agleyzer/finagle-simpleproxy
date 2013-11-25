@@ -7,14 +7,14 @@ import com.twitter.util.{Await, Future}
 import com.twitter.util.{Stopwatch, SynchronizedLruMap}
 import java.net.{InetSocketAddress, SocketAddress}
 import org.jboss.netty.handler.codec.http._
+import org.jboss.netty.handler.codec.http.HttpHeaders.{ getContentLength => contentLength }
 import com.twitter.finagle.stats.MetricsStatsReceiver
-
 
 object Main extends TwitterServer {
 
   val originFlag = flag("origin", new InetSocketAddress("xkcd.com", 80), "Origin Server")
 
-  val listenOnFlag = flag("http.main", new InetSocketAddress(8888), "Socket to listen on")
+  val listenOnFlag = flag("http.main", new InetSocketAddress(8888), "Address to listen on")
 
   val logFilter = new SimpleFilter[HttpRequest, HttpResponse] {
     def apply(req: HttpRequest, service: Service[HttpRequest, HttpResponse]): Future[HttpResponse] = {
@@ -24,7 +24,7 @@ object Main extends TwitterServer {
           req.getMethod,
           req.getUri,
           res.getStatus.getCode,
-          res.getContentLength,
+          contentLength(res),
           elapsed().inMillis)
       }
     }
@@ -44,20 +44,32 @@ object Main extends TwitterServer {
 
     def apply(req: HttpRequest, service: Service[HttpRequest, HttpResponse]): Future[HttpResponse] = {
       service(req) map { rsp =>
-        stat.add(rsp.getContentLength)
+        stat.add(contentLength(rsp))
         rsp
       }
     }
   }
 
+  val requestMassageFilter = new SimpleFilter[HttpRequest, HttpResponse] {
+    val hostname = originFlag().getHostName
+    def apply(req: HttpRequest, service: Service[HttpRequest, HttpResponse]): Future[HttpResponse] = {
+      req.setHeader("Host", hostname)
+      service(req)
+    }
+  }
+
+
   def originService = Http.newService(Group[SocketAddress](originFlag()))
 
   def main() {
 
+    log.info("Starting proxy for %s, listening on %s", originFlag(), listenOnFlag())
+
     val service =
-      headerFilter      andThen
-      contentSizeFilter andThen
-      logFilter         andThen
+      headerFilter         andThen
+      contentSizeFilter    andThen
+      logFilter            andThen
+      requestMassageFilter andThen
       originService
 
     val server = Http.serve(listenOnFlag(), service)
